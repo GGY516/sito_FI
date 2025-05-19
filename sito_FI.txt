@@ -1,0 +1,679 @@
+library(MendelianRandomization)
+library(tidyverse)
+library(data.table)
+library(TwoSampleMR)
+library(MVMR)
+library(plinkbinr)
+library(ieugwasr)
+library(BWMR)
+
+######################################################IVs selection
+setwd ("D:/MR/database/GWAS/植物甾醇/campesterol")
+data <- fread("SummaryStatistics_cat_210701.txt", header = TRUE)  # 假设文件有列名
+head(data)
+
+# 将p_value列从字符转换为数值  
+#data$p <- as.numeric(data$p)  
+
+#筛选p值
+filtered_data <- data[data$p< 5e-06, ]
+head(filtered_data)
+
+write.table(filtered_data,"SummaryStatistics_cat_210701_5e-6_pvalue filtered_data.csv",sep = ",",row.names = FALSE,quote = FALSE)
+
+#修正数据
+exp_data <- read_exposure_data(filename = "SummaryStatistics_cat_210701_5e-6_pvalue filtered_data.csv",
+                               sep = ",",
+                               snp_col = "markername",
+                               beta_col = "beta",
+                               se_col = "se",
+                               effect_allele_col = "ea",
+                               other_allele_col = "oa",
+                               eaf_col = "eaf",
+                               pval_col = "p",
+                               samplesize_col="nSamples",
+                               chr_col = "chr", pos_col = "bp")
+head(exp_data)
+
+#筛掉连锁不平衡的位点（独立性筛选）
+exp_data_clumped<-clump_data(exp_data,clump_kb = 5000,clump_r2 = 0.01,clump_p1 = 1,clump_p2 =1,pop = "EUR")
+exp_data_clumped$Phenotype<-"camp_5e-6"
+write.table(exp_data_clumped,"SummaryStatistics_cat_210701_5e-6_SNP.csv",sep = ",",row.names = FALSE,quote = FALSE)
+
+
+##########################################################UVMR
+setwd ("D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/SNP")
+
+#读取GWAS摘要级文件
+exp_dat <- read_exposure_data(
+  filename = 'SNP_ALL_5e-6.csv',
+  sep= ",",
+  snp_col = "SNP",
+  beta_col = "beta.exposure",
+  se_col = "se.exposure",
+  effect_allele_col ="effect_allele.exposure",
+  other_allele_col = "other_allele.exposure",
+  eaf_col = "eaf.exposure",
+  pval_col = "pval.exposure",
+  samplesize_col = "samplesize.exposure",
+  phenotype_col = "Phenotype")
+
+#读取工具变量在结局当中的信息
+#读取工具变量在结局当中的信息，缺失的SNP用r2>0.8的代替
+#衰弱指数 ebi-a-GCST90020053
+
+# CHD_out <- extract_outcome_data(
+#   snps=exp_dat$SNP,
+#   outcomes='ebi-a-GCST90020053',
+#   proxies = TRUE,rsq = 0.7,
+#   maf_threshold = 0.01,
+# )
+
+#读取工具变量在结局当中的信息
+Outcome_file = "D:/MR/database/GWAS/Frailty_GWAS_maf0.01_info0.9_hwe1e-6_FUMA.tsv"
+Outcome<-fread(Outcome_file)
+head(Outcome)
+
+Outcome <- data.frame(Outcome)
+#######将列名一一对应为文件夹中的列名
+CHD_out<-format_data(
+  Outcome,
+  type = "outcome",
+  snps = exp_dat$SNP,
+  snp_col = "SNP",
+  beta_col = "BETA",
+  se_col = "SE",
+  effect_allele_col = "A1",
+  other_allele_col = "A2",
+  pval_col = "P",
+  chr_col = "CHR",
+  pos_col = "BP"
+)
+
+CHD_out <- extract_outcome_data(snps = exp_dat$SNP, outcomes = 'met-d-non_HDL_C',proxies = TRUE,rsq = 0.8)
+mydata <- harmonise_data(
+  exposure_dat=exp_dat,
+  outcome_dat=CHD_out,
+  action= 2
+)
+mydata<- subset(mydata,pval.outcome>=5e-2)
+res <- mr(mydata)
+
+OR <-generate_odds_ratios(res)
+OR
+
+#异质性
+het <- mr_heterogeneity(mydata)
+het
+#多效性
+pleio <- mr_pleiotropy_test(mydata)
+pleio
+
+#使用随机效应模型
+RE <-mr(mydata,method_list=c('mr_ivw_mre'))
+REOR <-generate_odds_ratios(RE)
+REOR
+#使用固定效应模型·
+FE <-mr(mydata,method_list=c('mr_ivw_fe'))
+FEOR <-generate_odds_ratios(FE)
+FEOR
+
+#逐个剔除检验
+single <- mr_leaveoneout(mydata)
+mr_leaveoneout_plot(single)
+
+
+#存储文件 衰弱 握力 肌肉质量 去脂肪质量 步行速度 认知表现
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果//OR值.csv"
+write.csv(OR, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果//REOR值.csv"
+write.csv(REOR, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果//FEOR值.csv"
+write.csv(FEOR, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果//het.csv"
+write.csv(het, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果//pleio.csv"
+write.csv(pleio, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果//single.csv"
+write.csv(single, file = file_path, row.names = FALSE)
+
+##########################MR-PRESSO
+
+################MR-preeso
+#确定所有可用SNP
+Gene_mydata_filter<-mydata[mydata$mr_keep == "TRUE",]
+
+
+#拆分各基因SNP
+Gene_mydata<-mydata[mydata$exposure == "camp_5e-6",]
+Gene_presso<- mr_presso(BetaOutcome ="beta.outcome" , BetaExposure ="beta.exposure", SdOutcome ="se.outcome", SdExposure ="se.exposure",Gene_mydata,
+                        OUTLIERtest = TRUE, DISTORTIONtest = TRUE, SignifThreshold = 0.05, NbDistribution = 5000, seed = NULL)
+
+###去除outlier后重试
+Gene_mydata <- Gene_mydata[-c(12), ]
+
+
+#将主要结果合并成一个文件
+presso_outcome<-Gene_presso[["Main MR results"]]
+presso_outcome$Global_P <-Gene_presso[["MR-PRESSO results"]][["Global Test"]][["Pvalue"]]
+presso_outcome$Distortion_P <-Gene_presso[["MR-PRESSO results"]][["Distortion Test"]][["Pvalue"]]
+presso_outcome
+
+#路径里文件名不允许出现“/”
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/文章反思与修改/结果/MR-PRESSO/Total sitosterol.csv"
+write.csv(presso_outcome, file = file_path, row.names = TRUE)
+
+
+
+#################################################################Bidirection MR
+exp_dat <- extract_instruments(outcomes = 'ebi-a-GCST90020053',
+                               p1 = 5e-08,
+                               clump = TRUE, r2 = 0.001,)
+
+
+#读取工具变量在结局当中的信息
+Outcome_file = "D:/MR/database/GWAS/植物甾醇/sitosterol/SummaryStatistics_sit_210701.txt"
+Outcome<-fread(Outcome_file)
+head(Outcome)
+
+Outcome <- data.frame(Outcome)
+#######将列名一一对应为文件夹中的列名
+CHD_out<-format_data(
+  Outcome,
+  type = "outcome",
+  snps = exp_dat$SNP,
+  snp_col = "markername",
+  beta_col = "beta",
+  se_col = "se",
+  effect_allele_col = "ea",
+  other_allele_col = "oa",
+  pval_col = "p",
+  chr_col = "chr",
+  pos_col = "bp"
+)
+
+mydata <- harmonise_data(
+  exposure_dat=exp_dat,
+  outcome_dat=CHD_out,
+  action= 2
+)
+mydata<- subset(mydata,pval.outcome>=5e-8)
+res <- mr(mydata)
+
+OR <-generate_odds_ratios(res)
+OR
+
+#异质性
+het <- mr_heterogeneity(mydata)
+het
+#多效性
+pleio <- mr_pleiotropy_test(mydata)
+pleio
+
+#使用随机效应模型
+RE <-mr(mydata,method_list=c('mr_ivw_mre'))
+REOR <-generate_odds_ratios(RE)
+REOR
+#使用固定效应模型·
+FE <-mr(mydata,method_list=c('mr_ivw_fe'))
+FEOR <-generate_odds_ratios(FE)
+FEOR
+
+#逐个剔除检验
+single <- mr_leaveoneout(mydata)
+mr_leaveoneout_plot(single)
+
+
+#存储文件 衰弱 握力 肌肉质量 去脂肪质量 步行速度 认知表现
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果/OR值.csv"
+write.csv(OR, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果/REOR值.csv"
+write.csv(REOR, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果/FEOR值.csv"
+write.csv(FEOR, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果/het.csv"
+write.csv(het, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果/pleio.csv"
+write.csv(pleio, file = file_path, row.names = FALSE)
+
+file_path <- "D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/结果/single.csv"
+write.csv(single, file = file_path, row.names = FALSE)
+
+
+#######################################################################多变量
+
+########设置文件目录
+#暴露因素
+Exposure_file = "D:/MR/database/GWAS/植物甾醇/sitosterol/SummaryStatistics_sit_210701.txt"
+
+#中介因素
+#2013
+Mediator_file1 = "D:/MR/database/GWAS/met-d-non_HDL_C.txt"
+
+Mediator_file2 = "D:/MR/database/GWAS/hdl ieu-a-299.txt"
+
+Mediator_file3 = "D:/MR/database/GWAS/tg ieu-a-302.txt"
+
+#2021
+#Mediator_file1 = "D:/MR/database/GLGC/LDL_INV_EUR_HRC_1KGP3_others_ALL.meta.singlevar.results"
+
+#读取结局
+Outcome_file="D:/MR/database/GWAS/alm ebi-a-GCST90000025.txt"
+#Outcome_file="D:/MR/database/GWAS/"
+
+#暴露因素
+exp1<-fread(Exposure_file)
+head(exp1)
+
+#置换列名
+exp1<-exp1[,c("markername","ea","oa","eaf","beta","se","p")]
+
+colnames(exp1)<-c("SNP","A1","A2","eaf","BETA","SE","P")
+
+head(exp1)
+
+#中介因素1
+med1<-fread(Mediator_file1)
+head(med1)
+med1<-med1[,c("SNP","effect_allele.exposure","other_allele.exposure","eaf.exposure","beta.exposure","se.exposure","pval.exposure")]
+
+colnames(med1)<-c("SNP","A1","A2","eaf", "BETA","SE","P")
+
+head(med1)
+
+#中介因素2
+med2<-fread(Mediator_file2)
+head(med2)
+med2<-med2[,c("SNP","effect_allele.exposure","other_allele.exposure","eaf.exposure","beta.exposure","se.exposure","pval.exposure")]
+
+colnames(med2)<-c("SNP","A1","A2","eaf","BETA","SE","P")
+
+head(med2)
+
+#中介因素3
+med3<-fread(Mediator_file3)
+head(med3)
+med3<-med3[,c("SNP","effect_allele.exposure","other_allele.exposure","eaf.exposure","beta.exposure","se.exposure","pval.exposure")]
+
+colnames(med3)<-c("SNP","A1","A2","eaf", "BETA","SE","P")
+
+head(med3)
+
+#结局
+Outcome_file="D:/MR/database/GWAS/Atkins_2021_FrailtyIndex_GWAS_EuropeansAged60to70years_GRCh37_UKBiobank_TwinGene_associations.txt"
+Outcome<-fread(Outcome_file)
+head(Outcome)
+
+Outcome<-Outcome[,c("SNP","EA","OA","EAF_UKB","BETA_UKB2","SE_UKB2","P_UKB2")]
+#Outcome<-Outcome[,c("SNP","effect_allele.exposure","other_allele.exposure","eaf.exposure","beta.exposure","se.exposure","pval.exposure")]
+
+colnames(Outcome)<-c("SNP","A1","A2","eaf","BETA","SE","P")
+head(Outcome)
+
+
+# 
+# # #筛选p值
+# med1$P<- as.numeric(med1$P) 
+# med2$P<- as.numeric(med2$P)
+# med3$P<- as.numeric(med3$P)
+# 
+# 
+# Exp1 <-subset(exp1,pval.exposure<5e-08)
+# Med1 <-subset(med1,pval.exposure<5e-08)
+# Med2 <-subset(med2,pval.exposure<5e-08)
+# Med3 <-subset(med3,pval.exposure<5e-08)
+# 
+# #LD筛选
+# Exp1=clump_data(Exp1)
+# Med1=clump_data(Med1)
+# Med2=clump_data(Med2)
+# Med3=clump_data(Med3)
+
+#####提取暴露因素和中介因素的SNP
+Exp1_file = "D:/MR/植物甾醇/植物甾醇SNP++/sitosterol.csv"
+
+Med1_file = "D:/MR/植物甾醇/植物甾醇SNP++/met-d-non_HDL_C gwas - sito.csv"
+
+Med2_file = "D:/MR/植物甾醇/植物甾醇SNP++/HDL gwas - sito.csv"
+
+Med3_file = "D:/MR/植物甾醇/植物甾醇SNP++/TG gwas sito.csv"
+
+
+Exp1<-fread(Exp1_file)
+Exp1<-Exp1[,c("SNP","effect_allele.exposure","other_allele.exposure","eaf.exposure",
+              "beta.exposure","se.exposure","pval.exposure")]
+
+colnames(Exp1)<-c("SNP","A1","A2","eaf","BETA","SE","P")
+
+
+Med1<-fread(Med1_file)
+Med1<-Med1[,c("SNP","effect_allele.exposure","other_allele.exposure","eaf.exposure",
+              "beta.exposure","se.exposure","pval.exposure")]
+
+colnames(Med1)<-c("SNP","A1","A2","eaf","BETA","SE","P")
+
+
+Med2<-fread(Med2_file)
+Med2<-Med2[,c("SNP","effect_allele.exposure","other_allele.exposure","eaf.exposure",
+              "beta.exposure","se.exposure","pval.exposure")]
+
+colnames(Med2)<-c("SNP","A1","A2","eaf","BETA","SE","P")
+
+
+Med3<-fread(Med3_file)
+Med3<-Med3[,c("SNP","effect_allele.exposure","other_allele.exposure","eaf.exposure",
+              "beta.exposure","se.exposure","pval.exposure")]
+
+colnames(Med3)<-c("SNP","A1","A2","eaf","BETA","SE","P")
+
+
+
+
+
+#提取SNP列
+Exp1<-Exp1[,"SNP"]
+Med1<-Med1[,"SNP"]
+Med2<-Med2[,"SNP"]
+Med3<-Med3[,"SNP"]
+Out<-Outcome[,"SNP"]
+
+#合并与去重
+all_snp<-rbind(Med1,Med2,Med3)
+uni_snp<-unique(all_snp)
+uni_snp
+
+
+
+#再次筛选LD
+uni_snp=clump_data(uni_snp)
+
+snp_combined <- c(uni_snp$SNP, Exp1$SNP)  
+
+# 如果你想要创建一个新的数据框  
+uni_snp <- data.frame(SNP = snp_combined)  
+
+
+#将所得snp与暴露因素合并
+Exp1<-merge(uni_snp,exp1,by="SNP")
+
+Med1<-merge(uni_snp,med1,by="SNP")
+
+Med2<-merge(uni_snp,med2,by="SNP")
+
+Med3<-merge(uni_snp,med3,by="SNP")
+
+#合并结局
+Out<-merge(uni_snp,Outcome,by="SNP")
+
+#去除重复
+Exp1<-Exp1 %>%
+  distinct(SNP,.keep_all=TRUE)
+
+Med1<-Med1 %>%
+  distinct(SNP,.keep_all=TRUE)
+
+Med2<-Med2 %>%
+  distinct(SNP,.keep_all=TRUE)
+
+Med3<-Med3 %>%
+  distinct(SNP,.keep_all=TRUE)
+
+Out<-Out %>%
+  distinct(SNP,.keep_all=TRUE)
+
+#取交集
+conexp_a1<-merge(Exp1,Med1,by="SNP")
+conexp_a2<-merge(Med2,Med3,by="SNP")
+conexp_a3<-merge(conexp_a2,conexp_a1,by="SNP")
+conexp_a4<-merge(conexp_a3,Out,by="SNP")
+conexp_a5<-merge(conexp_a3,Out,by="SNP")
+head(Out)
+
+Exp1<-Exp1[Exp1$SNP %in% conexp_a4$SNP,]
+
+Med1<-Med1[Med1$SNP %in% conexp_a4$SNP,]
+
+Med2<-Med2[Med2$SNP %in% conexp_a4$SNP,]
+
+Med3<-Med3[Med3$SNP %in% conexp_a4$SNP,]
+
+Out<-Out[Out$SNP %in% conexp_a4$SNP,]
+
+#输入数据
+exps<-c ("phyto","nonHDL","HDL","TG")
+MRMVInputObject<- mr_mvinput(bx=cbind(Exp1$BETA,Med1$BETA,Med2$BETA,Med3$BETA),
+                             bxse=cbind(Exp1$SE,Med1$SE,Med2$SE,Med3$SE),
+                             by=Out$BETA,
+                             byse=Out$SE,exposure=exps)
+
+sres <- strength_mvmr(r_input = MRMVInputObject, gencov = 0)
+sres
+#多变量IVW
+
+
+MRMV_IVW<- mr_mvivw(MRMVInputObject,
+                    model="default",
+                    correl=FALSE,
+                    distribution="normal",
+                    alpha=0.05)
+MRMV_IVW
+
+
+#egger方法
+MRMV_MREGGER<-mr_mvegger(
+  MRMVInputObject,
+  orientate = 1,
+  correl = FALSE,
+  distribution = "normal",
+  alpha = 0.05)
+
+MRMV_MREGGER
+
+#median
+MRMV_median<-mr_mvmedian(
+  MRMVInputObject,
+  distribution = "normal",
+  alpha = 0.05,
+  iterations = 10000,
+  seed = 314159265
+)
+
+MRMV_median
+
+file_path <- "D:/MR/database/多变量/sit.csv"
+write.csv(MRMV_IVW, file = file_path, row.names = FALSE)
+
+
+########################################################BWMR
+setwd ("D:/MR/植物甾醇/写作与投稿材料/原文修改/FSN/返修/SNP")
+
+#读取GWAS摘要级文件
+exp_dat <- read_exposure_data(
+  filename = 'SNP_ALL_5e-6.csv',
+  sep= ",",
+  snp_col = "SNP",
+  beta_col = "beta.exposure",
+  se_col = "se.exposure",
+  effect_allele_col ="effect_allele.exposure",
+  other_allele_col = "other_allele.exposure",
+  eaf_col = "eaf.exposure",
+  pval_col = "pval.exposure",
+  samplesize_col = "samplesize.exposure",
+  phenotype_col = "Phenotype")
+
+#读取工具变量在结局当中的信息
+#读取工具变量在结局当中的信息，缺失的SNP用r2>0.8的代替
+#衰弱指数 ebi-a-GCST90020053
+BWMR_SNP<-exp_dat[exp_dat$exposure == "bras_5e-6",]
+
+CHD_out <- extract_outcome_data(
+  snps=BWMR_SNP$SNP,
+  outcomes='ebi-a-GCST90020053',
+  proxies = TRUE,rsq = 0.7,
+  maf_threshold = 0.01,
+)
+mydata <- harmonise_data(
+  exposure_dat=BWMR_SNP,
+  outcome_dat=CHD_out,
+  action= 2
+)
+
+df<-mydata[,c("SNP","beta.exposure","beta.outcome","se.exposure","se.outcome")]
+head(df)
+
+MRres <- BWMR2(df$beta.exposure, df$beta.outcome, df$se.exposure, df$se.outcome)
+
+
+BWMR2 <- function (gammahat, Gammahat, sigmaX, sigmaY, alpha = 1, sqsigma0 = 1) 
+{
+  N <- length(gammahat)
+  sqsigmaX <- sigmaX^2
+  sqsigmaY <- sigmaY^2
+  beta <- 0
+  sqtau <- 1^2
+  sqsigma <- 1^2
+  mu_gamma <- gammahat
+  sqsigma_gamma <- rep(0.1, N)
+  pi_w <- rep(0.5, N)
+  ELBO_set <- numeric(0)
+  for (iter in 1:5000) {
+    sqsigma_beta <- 1/(1/sqsigma0 + sum(pi_w * (mu_gamma^2 + 
+                                                  sqsigma_gamma)/(sqsigmaY + sqtau)))
+    mu_beta <- sum(pi_w * mu_gamma * Gammahat/(sqsigmaY + 
+                                                 sqtau)) * sqsigma_beta
+    sqsigma_gamma <- 1/(1/sqsigmaX + pi_w * (mu_beta^2 + 
+                                               sqsigma_beta)/(sqsigmaY + sqtau) + 1/sqsigma)
+    mu_gamma <- (gammahat/sqsigmaX + pi_w * Gammahat * mu_beta/(sqsigmaY + 
+                                                                  sqtau)) * sqsigma_gamma
+    a <- alpha + sum(pi_w)
+    b <- N + 1 - sum(pi_w)
+    q0 <- exp(digamma(b) - digamma(a + b))
+    q1 <- exp(-0.5 * log(2 * pi) - 0.5 * log(sqsigmaY + 
+                                               sqtau) - 0.5 * ((mu_beta^2 + sqsigma_beta) * (mu_gamma^2 + 
+                                                                                               sqsigma_gamma) - 2 * mu_beta * mu_gamma * Gammahat + 
+                                                                 Gammahat^2)/(sqsigmaY + sqtau) + digamma(a) - digamma(a + 
+                                                                                                                         b))
+    pi_w <- q1/(q0 + q1)
+    if (sum(pi_w) == 0) {
+      message("Invalid IVs!")
+      mu_beta = NA
+      se_beta = NA
+      P_value = NA
+      return(list(beta = NA, se_beta = NA, P_value = NA))
+    }
+    sqsigma <- sum(mu_gamma^2 + sqsigma_gamma)/N
+    sqtau <- sum(pi_w * ((mu_beta^2 + sqsigma_beta) * (mu_gamma^2 + 
+                                                         sqsigma_gamma) - 2 * mu_beta * mu_gamma * Gammahat + 
+                           Gammahat^2) * sqtau^2/((sqsigmaY + sqtau)^2))/sum(pi_w/(sqsigmaY + 
+                                                                                     sqtau))
+    sqtau <- sqrt(sqtau)
+    ELBO <- ELBO_func(N, gammahat, Gammahat, sqsigmaX, sqsigmaY, 
+                      mu_beta, sqsigma_beta, mu_gamma, sqsigma_gamma, 
+                      a, b, pi_w, sqsigma, sqtau)
+    ELBO_set <- c(ELBO_set, ELBO)
+    if (iter > 1 && (abs((ELBO_set[iter] - ELBO_set[iter - 
+                                                    1])/ELBO_set[iter - 1]) < 1e-06)) {
+      break
+    }
+  }
+  df1 <- data.frame(gammahat = gammahat, Gammahat = Gammahat, 
+                    sigmaX = sigmaX, sigmaY = sigmaY)
+  plot1 <- ggplot(data = df1, aes(x = gammahat, y = Gammahat)) + 
+    geom_pointrange(aes(ymin = Gammahat - sigmaY, ymax = Gammahat + 
+                          sigmaY), color = "gray59", size = 0.3) + geom_errorbarh(aes(xmin = gammahat - 
+                                                                                        sigmaX, xmax = gammahat + sigmaX, height = 0), color = "gray59") + 
+    labs(x = "SNP-exposure effect", y = "SNP-outcome effect", 
+         title = "Plot1: Plot of data with standard error bar")
+  iteration <- seq(1, (length(ELBO_set)), by = 1)
+  df2 <- data.frame(iteration = iteration, ELBO_iter = ELBO_set)
+  plot2 <- ggplot(df2, aes(x = iteration, y = ELBO_iter)) + 
+    geom_line(size = 0.5, color = "tomato1") + geom_point(size = 0.5, 
+                                                          color = "tomato1") + labs(x = "iteration", y = "elbo", 
+                                                                                    title = "Plot2: Plot of evidence lower bound (elbo)")
+  serial_number <- seq(1, N, by = 1)
+  df3 <- data.frame(weight = pi_w, serial_number = serial_number)
+  plot3 <- ggplot(data = df3, mapping = aes(x = factor(serial_number), 
+                                            y = weight, fill = weight)) + geom_bar(stat = "identity", 
+                                                                                   position = "dodge") + labs(x = "observation No.", y = "weight", 
+                                                                                                              title = "Plot3: Posterior mean of weight of each observation") + 
+    ylim(0, 1) + theme(axis.text.x = element_text(size = 5))
+  df4 <- data.frame(gammahat = gammahat, Gammahat = Gammahat, 
+                    sqsigmaX = sqsigmaX, sqsigmaY = sqsigmaY, w = pi_w)
+  plot4 <- ggplot(df4, aes(x = gammahat, y = Gammahat, color = w)) + 
+    geom_point(size = 0.3) + geom_pointrange(aes(ymin = Gammahat - 
+                                                   sigmaY, ymax = Gammahat + sigmaY), size = 0.3) + geom_errorbarh(aes(xmin = gammahat - 
+                                                                                                                         sigmaX, xmax = gammahat + sigmaX, height = 0)) + geom_abline(intercept = 0, 
+                                                                                                                                                                                      slope = mu_beta, color = "#990000", linetype = "dashed", 
+                                                                                                                                                                                      size = 0.5) + labs(x = "SNP-exposure effect", y = "SNP-outcome effect", 
+                                                                                                                                                                                                         title = "Plot4: Plot of weighted data and its regression result")
+  forV <- matrix(nrow = N, ncol = 4)
+  forV[, 1] <- sqsigma_gamma
+  forV[, 2] <- 2 * mu_gamma * sqsigma_gamma
+  forV[, 3] <- forV[, 2]
+  forV[, 4] <- 2 * sqsigma_gamma^2 + 4 * mu_gamma^2 * sqsigma_gamma
+  V <- matrix(rep(0, (3 * N + 4) * (3 * N + 4)), nrow = 3 * 
+                N + 4, ncol = 3 * N + 4)
+  for (j in 1:N) {
+    V[(3 * j):(3 * j + 1), (3 * j):(3 * j + 1)] <- matrix(forV[j, 
+    ], 2, 2)
+    V[3 * j + 2, 3 * j + 2] <- pi_w[j] - (pi_w[j]^2)
+  }
+  V[1:2, 1:2] <- matrix(c(sqsigma_beta, 2 * mu_beta * sqsigma_beta, 
+                          2 * mu_beta * sqsigma_beta, 2 * sqsigma_beta^2 + 4 * 
+                            mu_beta^2 * sqsigma_beta), 2, 2)
+  V[(3 * N + 3):(3 * N + 4), (3 * N + 3):(3 * N + 4)] <- matrix(c(trigamma(a) - 
+                                                                    trigamma(a + b), -trigamma(a + b), -trigamma(a + b), 
+                                                                  trigamma(b) - trigamma(a + b)), 2, 2)
+  H <- matrix(rep(0, (3 * N + 4) * (3 * N + 4)), nrow = 3 * 
+                N + 4, ncol = 3 * N + 4)
+  forH <- matrix(nrow = N, ncol = 6)
+  forH[, 1] <- pi_w * Gammahat/(sqsigmaY + sqtau)
+  forH[, 2] <- mu_gamma * Gammahat/(sqsigmaY + sqtau)
+  forH[, 3] <- -0.5 * pi_w/(sqsigmaY + sqtau)
+  forH[, 4] <- -0.5 * (mu_gamma^2 + sqsigma_gamma)/(sqsigmaY + 
+                                                      sqtau)
+  forH[, 5] <- mu_beta * Gammahat/(sqsigmaY + sqtau)
+  forH[, 6] <- -0.5 * (mu_beta^2 + sqsigma_beta)/(sqsigmaY + 
+                                                    sqtau)
+  for (j in 1:N) {
+    H[1, 3 * j] <- forH[j, 1]
+    H[1, 3 * j + 2] <- forH[j, 2]
+    H[2, 3 * j + 1] <- forH[j, 3]
+    H[2, 3 * j + 2] <- forH[j, 4]
+    H[(3 * N + 3):(3 * N + 4), 3 * j + 2] <- c(1, -1)
+    H[3 * j + 2, (3 * N + 3):(3 * N + 4)] <- c(1, -1)
+    H[(3 * j):(3 * j + 1), 3 * j + 2] <- forH[j, 5:6]
+    H[3 * j + 2, (3 * j):(3 * j + 1)] <- forH[j, 5:6]
+  }
+  H[, 1] <- H[1, ]
+  H[, 2] <- H[2, ]
+  I <- diag(3 * N + 4)
+  Sigma_hat <- try(solve(I - V %*% H) %*% V)
+  if (inherits(Sigma_hat, "try-error")) {
+    message("Invalid IVs!")
+    return(list(beta = NA, se_beta = NA, P_value = NA))
+  }
+  else {
+    se_beta <- sqrt(Sigma_hat[1, 1])
+  }
+  W <- (mu_beta/se_beta)^2
+  P_value <- pchisq(W, 1, lower.tail = F)
+  message("Estimate of beta=", mu_beta, ", se of beta=", se_beta, 
+          ", P-value=", P_value, ".")
+  output <- list(beta = mu_beta, se_beta = se_beta, P_value = P_value, 
+                 weights = pi_w, tau = sqrt(sqtau), sigma = sqrt(sqsigma), 
+                 mu_pi = a/(a + b), plot1 = plot1, plot2 = plot2, plot3 = plot3, 
+                 plot4 = plot4)
+}
+
